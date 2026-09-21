@@ -114,18 +114,37 @@ def main(plan_path):
 
     # ---- 6. звук ----
     audio = f"{work}/audio.wav"
-    if not skip_audio and plan.get("sound", {}).get("mode", "design") == "raw":
-        # Оригинальная дорожка без обработки: только статическое усиление до цели
-        # и лимитер по пикам. Чистое усиление не меняет отношение шум/речь,
-        # поэтому материал не начинает шуметь сильнее, чем шумел.
+    mode = plan.get("sound", {}).get("mode", "design")
+    if not skip_audio and mode in ("raw", "raw+bed"):
+        # Голос не обрабатывается: только статическое усиление до цели и лимитер
+        # по пикам. Чистое усиление не меняет отношение шум/речь, поэтому
+        # материал не начинает шуметь сильнее, чем шумел.
         snd = plan.get("sound", {})
+        dur = total / FPS
         sh(f'ffmpeg -v error -i "{src}" -vn -c:a pcm_s24le "{work}/voice_src.wav" -y')
         lufs = measure_lufs(f"{work}/voice_src.wav")
         gain = round(snd.get("lufs", -14.0) - lufs, 2)
         print(f"оригинал: {lufs} LUFS -> усиление {gain} dB, без цепи обработки")
         sh(f'ffmpeg -v error -i "{work}/voice_src.wav" '
            f'-af "volume={gain}dB,alimiter=limit=0.891:attack=5:release=60:level=false,apad" '
-           f'-t {total/FPS:.3f} -ar 48000 -c:a pcm_s24le "{audio}" -y')
+           f'-t {dur:.3f} -ar 48000 -c:a pcm_s24le "{work}/voice_norm.wav" -y')
+        if mode == "raw":
+            shutil.copy(f"{work}/voice_norm.wav", audio)
+        else:
+            # Тональные акценты и тихая подложка ПОД нетронутый голос.
+            # Микс не нормализуется заново — иначе уровень голоса уедет.
+            energy = snd.get("energy") or auto_energy(tl)
+            sound.write(f"{work}/music.wav", sound.music(dur, energy, snd.get("bpm", 84), tonal=True), 0.75)
+            sound.write(f"{work}/sfx.wav", sound.sfx(dur, cuts_in, cuts_out, snd.get("ticks"),
+                                                     snd.get("riser_at"), snd.get("accent_at"), tonal=True), 0.85)
+            mv, ms = snd.get("music_gain", 0.16), snd.get("sfx_gain", 0.263)
+            # порог сайдчейна выше шума комнаты, иначе дак дышит на шуме
+            sh(f'ffmpeg -v error -i "{work}/voice_norm.wav" -i "{work}/music.wav" -i "{work}/sfx.wav" '
+               f'-filter_complex "[0:a]asplit=2[v1][vsc];[1:a]volume={mv}[m0];'
+               f'[m0][vsc]sidechaincompress=threshold=0.08:ratio=5:attack=20:release=350[md];'
+               f'[2:a]volume={ms}[s];[v1][md][s]amix=inputs=3:normalize=0:duration=longest,'
+               f'alimiter=limit=0.891:level=false[out]" -map "[out]" -ar 48000 -c:a pcm_s24le "{audio}" -y')
+            print(f"подложка и акценты домикшированы (музыка x{mv}, SFX x{ms}), голос не пересчитан")
     elif not skip_audio:
         dur = total / FPS
         snd = plan.get("sound", {})

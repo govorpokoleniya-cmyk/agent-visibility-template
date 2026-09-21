@@ -71,6 +71,17 @@ def sweep(dur, f0, f1, q=2.0, up=True):
     return out * np.sin(np.pi * np.linspace(0, 1, n)) ** 1.4
 
 
+def tonal_whoosh(dur, f0, f1, noise_mix=0.22):
+    """Глиссандо вместо шумового вуша: слышно как движение, но без шипения.
+    Шумовая доля зажата в 250-1400 Гц и не попадает в полосу шума комнаты."""
+    n = int(dur * SR); tt = np.arange(n) / SR
+    fr = f0 * (f1 / f0) ** (tt / tt[-1])
+    ph = 2 * np.pi * np.cumsum(fr) / SR
+    tone = np.sin(ph) + .35 * np.sin(2 * ph) + .12 * np.sin(3 * ph)
+    col = bp(rng.normal(0, 1, n), 250, 1400)
+    return ((1 - noise_mix) * tone / 1.5 + noise_mix * col) * np.sin(np.pi * np.linspace(0, 1, n)) ** 1.5
+
+
 def _note(f, dur, amp=1.0, detune=0.003, harm=(1.0, .32, .14, .06)):
     n = int(dur * SR)
     tt = np.arange(n) / SR
@@ -81,7 +92,7 @@ def _note(f, dur, amp=1.0, detune=0.003, harm=(1.0, .32, .14, .06)):
     return x * amp / (len(harm) * 2)
 
 
-def music(duration, energy_points, bpm=84, root=220.0,
+def music(duration, energy_points, bpm=84, tonal=False, root=220.0,
           chords=((0, 3, 7), (-4, 0, 5), (-9, -5, 0), (-2, 2, 7))):
     N = int(SR * duration)
     t = np.arange(N) / SR
@@ -97,7 +108,7 @@ def music(duration, energy_points, bpm=84, root=220.0,
         v = np.zeros(n)
         for semi in ch:
             v += _note(f(semi), n / SR, .5) + _note(f(semi) * 2, n / SR, .18)
-        place(pad, lp(v * e, 1900), at)
+        place(pad, lp(v * e, 1200 if tonal else 1900), at)
         bn = _note(f(ch[0]) / 2, slot + .4, .9, detune=.001, harm=(1.0, .25))
         place(bass, lp(bn * env_adsr(len(bn), .35, .6, .6, .6), 320), at)
 
@@ -123,7 +134,7 @@ def music(duration, energy_points, bpm=84, root=220.0,
         place(arp, v, at)
         i += 1
 
-    air = hp(rng.normal(0, 1, N), 6000) * .02
+    air = np.zeros(N) if tonal else hp(rng.normal(0, 1, N), 6000) * .02
     e = np.interp(t, [p[0] for p in energy_points], [p[1] for p in energy_points])
     w = int(SR * .6)
     e = np.convolve(e, np.ones(w) / w, mode="same")
@@ -131,35 +142,53 @@ def music(duration, energy_points, bpm=84, root=220.0,
 
     mix = (reverb(pad, 1.6, .34) * .55 + bass * .5 + pulse * (.30 + .35 * e)
            + reverb(arp, 1.0, .40) * .22 * np.clip(e - .35, 0, 1) * 2.2 + air)
-    return mix * (.55 + .9 * e)
+    mix = mix * (.55 + .9 * e)
+    return lp(mix, 1600) if tonal else mix
 
 
-def sfx(duration, cuts_in, cuts_out, ticks=None, riser_at=None, accent_at=None):
+def sfx(duration, cuts_in, cuts_out, ticks=None, riser_at=None, accent_at=None, tonal=False):
     N = int(SR * duration)
     buf = np.zeros(N)
     for c in cuts_in:
-        place(buf, sweep(.42, 400, 5200, 2.2, True), c - .30, .42)
+        if tonal:
+            place(buf, tonal_whoosh(.38, 220, 1100), c - .28, .30)
+        else:
+            place(buf, sweep(.42, 400, 5200, 2.2, True), c - .30, .42)
         n = int(.45 * SR); tt = np.arange(n) / SR
         fdrop = 120 * np.exp(-tt * 14) + 48
         imp = np.sin(2 * np.pi * np.cumsum(fdrop) / SR) * np.exp(-tt * 7.5)
-        imp += lp(rng.normal(0, 1, n) * np.exp(-tt * 90), 1800) * .3
-        place(buf, imp, c, .55)
+        imp += lp(rng.normal(0, 1, n) * np.exp(-tt * (120 if tonal else 90)), 700 if tonal else 1800) * (.22 if tonal else .3)
+        place(buf, imp, c, .48 if tonal else .55)
     for c in cuts_out:
-        place(buf, sweep(.30, 5200, 700, 2.0, False), c - .20, .30)
+        if tonal:
+            place(buf, tonal_whoosh(.28, 900, 260, noise_mix=.18), c - .18, .22)
+        else:
+            place(buf, sweep(.30, 5200, 700, 2.0, False), c - .20, .30)
         n = int(.28 * SR); tt = np.arange(n) / SR
         place(buf, np.sin(2 * np.pi * 62 * tt) * np.exp(-tt * 12), c, .32)
     if ticks:
         for k in range(ticks.get("count", 6)):
             at = ticks["from"] + k * ticks.get("step", .5)
             n = int(.05 * SR); tt = np.arange(n) / SR
-            tick = (np.sin(2 * np.pi * 2300 * tt) * np.exp(-tt * 180)
-                    + lp(rng.normal(0, 1, n), 5000) * np.exp(-tt * 260) * .6)
-            place(buf, tick, at, .22 if k % 2 else .3)
+            if tonal:
+                tick = np.sin(2 * np.pi * 1800 * tt) * np.exp(-tt * 170)
+                place(buf, tick, at, .10 if k % 2 else .14)
+            else:
+                tick = (np.sin(2 * np.pi * 2300 * tt) * np.exp(-tt * 180)
+                        + lp(rng.normal(0, 1, n), 5000) * np.exp(-tt * 260) * .6)
+                place(buf, tick, at, .22 if k % 2 else .3)
     if riser_at is not None:
         n = int(1.25 * SR); tt = np.arange(n) / SR
-        ris = sweep(1.25, 600, 7000, 1.8, True) * np.linspace(0, 1, n) ** 2
-        ris += np.sin(2 * np.pi * (200 + 500 * (tt / tt[-1]) ** 2) * tt) * np.linspace(0, .25, n)
-        place(buf, ris, riser_at - 1.25, .34)
+        if tonal:                                            # нота ползёт вверх на октаву
+            fr = 165 * 2 ** (tt / tt[-1])
+            ph = 2 * np.pi * np.cumsum(fr) / SR
+            ris = (np.sin(ph) + .3 * np.sin(2 * ph) + .12 * np.sin(3 * ph)) / 1.4
+            ris *= np.linspace(0, 1, n) ** 2 * (1 + .12 * np.sin(2 * np.pi * 7 * tt))
+            place(buf, lp(ris, 1800), riser_at - 1.25, .26)
+        else:
+            ris = sweep(1.25, 600, 7000, 1.8, True) * np.linspace(0, 1, n) ** 2
+            ris += np.sin(2 * np.pi * (200 + 500 * (tt / tt[-1]) ** 2) * tt) * np.linspace(0, .25, n)
+            place(buf, ris, riser_at - 1.25, .34)
     if accent_at is not None:
         n = int(.6 * SR); tt = np.arange(n) / SR
         acc = (np.sin(2 * np.pi * 330 * tt) * np.exp(-tt * 9) * .25

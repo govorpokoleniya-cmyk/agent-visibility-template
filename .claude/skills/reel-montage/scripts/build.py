@@ -85,12 +85,16 @@ def main(plan_path):
             fh.write(f'file \'seg/{s["id"]}.mp4\'\n')
     sh(f'ffmpeg -v error -f concat -safe 0 -i "{work}/concat.txt" -c copy "{work}/timeline.mp4" -y')
 
-    # ---- 4. субтитры ----
+    # ---- 4. субтитры (можно выключить: "subtitles": {"enabled": false}) ----
     sub = plan.get("subtitles", {})
     subs_path = f"{work}/subs.ass"
-    n_ch, n_ev = subtitles.build(plan["transcript"], subs_path, sub.get("style"),
-                                 sub.get("hide_after"), (W, H))
-    print(f"субтитры: {n_ch} групп, {n_ev} событий")
+    burn_subs = sub.get("enabled", True)
+    if burn_subs:
+        n_ch, n_ev = subtitles.build(plan["transcript"], subs_path, sub.get("style"),
+                                     sub.get("hide_after"), (W, H))
+        print(f"субтитры: {n_ch} групп, {n_ev} событий")
+    else:
+        print("субтитры: выключены планом")
 
     # ---- 5. композит: плашки + вспышки на склейках + субтитры ----
     inputs, fc, last = [f'-i "{work}/timeline.mp4"'], [], "0:v"
@@ -101,15 +105,28 @@ def main(plan_path):
         last = f"c{k}"
     flash = "+".join(f"{plan.get('flash', 0.30)}*exp(-pow((t-{c:.3f})/0.05,2))" for c in cuts_out) or "0"
     grade = plan.get("grade", "contrast=1.05:saturation=1.06")
-    fc.append(f"[{last}]eq={grade}:brightness='{flash}':eval=frame[g]")
-    fc.append(f"[g]subtitles={subs_path}:fontsdir={cards.FONT_DIR}[v]")
+    fc.append(f"[{last}]eq={grade}:brightness='{flash}':eval=frame" + ("[g]" if burn_subs else "[v]"))
+    if burn_subs:
+        fc.append(f"[g]subtitles={subs_path}:fontsdir={cards.FONT_DIR}[v]")
     sh(f'ffmpeg -v error {" ".join(inputs)} -filter_complex "{";".join(fc)}" -map "[v]" '
        f'-c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -r {FPS} -an "{work}/video.mp4" -y')
     print("видеоряд собран")
 
     # ---- 6. звук ----
     audio = f"{work}/audio.wav"
-    if not skip_audio:
+    if not skip_audio and plan.get("sound", {}).get("mode", "design") == "raw":
+        # Оригинальная дорожка без обработки: только статическое усиление до цели
+        # и лимитер по пикам. Чистое усиление не меняет отношение шум/речь,
+        # поэтому материал не начинает шуметь сильнее, чем шумел.
+        snd = plan.get("sound", {})
+        sh(f'ffmpeg -v error -i "{src}" -vn -c:a pcm_s24le "{work}/voice_src.wav" -y')
+        lufs = measure_lufs(f"{work}/voice_src.wav")
+        gain = round(snd.get("lufs", -14.0) - lufs, 2)
+        print(f"оригинал: {lufs} LUFS -> усиление {gain} dB, без цепи обработки")
+        sh(f'ffmpeg -v error -i "{work}/voice_src.wav" '
+           f'-af "volume={gain}dB,alimiter=limit=0.891:attack=5:release=60:level=false,apad" '
+           f'-t {total/FPS:.3f} -ar 48000 -c:a pcm_s24le "{audio}" -y')
+    elif not skip_audio:
         dur = total / FPS
         snd = plan.get("sound", {})
         energy = snd.get("energy") or auto_energy(tl)

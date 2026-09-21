@@ -5,7 +5,7 @@
   "transcript": "transcript.json",
   "width": 1080,
   "height": 1920,
-  "subtitles": { "hide_after": 28.35 },
+  "subtitles": { "enabled": false, "hide_after": 28.35 },
 
   "timeline": [
     { "id": "S1", "type": "face", "src": 0.000,  "frames": 102, "zoom": [1.00, 1.05], "center": [0.50, 0.46] },
@@ -44,8 +44,11 @@
   ],
 
   "sound": {
-    "bpm": 84,
+    "mode": "raw",
     "lufs": -14.0,
+
+    "_комментарий": "mode raw — оригинальная дорожка, только усиление до lufs и лимитер по пикам. Ключи ниже работают в mode design (синтезированный саунд-дизайн).",
+    "bpm": 84,
     "music_gain": 0.20,
     "sfx_gain": 0.30,
     "ticks": { "from": 8.15, "count": 6, "step": 0.5 },
